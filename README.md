@@ -48,7 +48,7 @@ int main() {
     mach_port_t process = getProcess(pid);
 
     if (isNoError() && isProcessValid(process)) {
-      uintptr_t baseAddress = getBaseAddressByRegion(process, 16);
+      uintptr_t baseAddress = getBaseAddressByRegion(process, region);
 
       if (baseAddress) {
         uintptr_t pointerAddress = (uintptr_t)readAddress(
