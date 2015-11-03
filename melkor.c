@@ -1,3 +1,15 @@
+/*
+ * melkor.c: Memory Hacking Helper
+ *
+ * (C) Copyright 2015
+ * Author: Eray Arslan <relfishere@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; version 2
+ * of the License.
+ */
+
 #include <unistd.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -72,6 +84,49 @@ uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
   }
 
   return _result;
+}
+
+int detectRegionId(mach_port_t process, uintptr_t pointerAddress) {
+  kern_return_t lerror = KERN_SUCCESS;
+  vm_address_t address = 0;
+  vm_size_t size = 0;
+  uint32_t depth = 1;
+
+  int region_id = 0;
+
+  uintptr_t _result;
+
+  while (true) {
+    struct vm_region_submap_info_64 info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+
+    lerror = vm_region_recurse_64(
+      process,
+      &address,
+      &size,
+      &depth,
+      (vm_region_info_64_t)&info,
+      &count
+    );
+
+    if (lerror == KERN_INVALID_ADDRESS){
+      break;
+    }
+
+    if (info.is_submap) {
+      depth++;
+    } else {
+      if (address >= pointerAddress &&
+        pointerAddress <= address + size) {
+        return region_id;
+      }
+
+      address += size;
+      region_id++;
+    }
+  }
+
+  return -1;
 }
 
 void * readAddress(mach_port_t process, uintptr_t address, int size) {
