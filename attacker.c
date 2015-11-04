@@ -13,6 +13,8 @@ int main() {
     printf("[+] pid: ");
     scanf("%d", &pid);
 
+    showInfo();
+
     mach_port_t process = getProcess(pid);
 
     if (isNoError() && isProcessValid(process)) {

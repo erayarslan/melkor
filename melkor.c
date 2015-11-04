@@ -22,6 +22,9 @@
 #include <dlfcn.h>
 #include <mach-o/fat.h>
 #include <mach-o/getsect.h>
+#include <mach-o/dyld_images.h>
+#include <mach-o/dyld.h>
+#include <stdio.h>
 
 kern_return_t merror;
 
@@ -47,6 +50,23 @@ mach_port_t getProcess(int pid) {
   mach_port_t _result;
   merror = task_for_pid(mach_task_self(), pid, &_result);
   return _result;
+}
+
+void showInfo() {
+  kern_return_t kr;
+  task_dyld_info_data_t infoData;
+  mach_msg_type_number_t task_info_outCnt = TASK_DYLD_INFO_COUNT;
+  merror = task_info (mach_task_self(), TASK_DYLD_INFO, (task_info_t)&infoData, &task_info_outCnt);
+
+  struct dyld_all_image_infos *allImageInfos = (struct dyld_all_image_infos *)infoData.all_image_info_addr;
+
+  int i = 0;
+
+  for(i=0;i<allImageInfos->infoArrayCount;i++) {
+    printf("image: %s %d\n", allImageInfos->infoArray[i].imageFilePath, (int)allImageInfos->infoArray[i].imageFileModDate);
+  }
+
+  uintptr_t sharedCacheSlide = allImageInfos->sharedCacheSlide;
 }
 
 uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
