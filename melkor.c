@@ -18,6 +18,10 @@
 #include <mach/mach_types.h>
 #include <mach/mach_vm.h>
 #include <mach/vm_map.h>
+#include <mach/mach.h>
+#include <dlfcn.h>
+#include <mach-o/fat.h>
+#include <mach-o/getsect.h>
 
 kern_return_t merror;
 
@@ -84,6 +88,43 @@ uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
   }
 
   return _result;
+}
+
+mach_vm_address_t disableASLR(mach_port_t process) {
+  kern_return_t kr = 0;
+  vm_address_t iter = 0;
+
+  while (1) {
+    struct mach_header mh = {0};
+    vm_address_t addr = iter;
+    vm_size_t lsize = 0;
+    uint32_t depth;
+    mach_vm_size_t bytes_read = 0;
+    struct vm_region_submap_info_64 info;
+    mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    if (vm_region_recurse_64(process, &addr, &lsize, &depth, (vm_region_info_t)&info, &count)) {
+        break;
+    }
+
+    kr = mach_vm_read_overwrite(
+      process,
+      (mach_vm_address_t)addr,
+      (mach_vm_size_t)sizeof(struct mach_header),
+      (mach_vm_address_t)&mh,
+      &bytes_read
+    );
+
+    if (kr == KERN_SUCCESS && bytes_read == sizeof(struct mach_header)) {
+      if ((mh.magic == MH_MAGIC || mh.magic == MH_MAGIC_64) && mh.filetype == MH_EXECUTE) {
+        return addr;
+        break;
+      }
+    }
+
+    iter = addr + lsize;
+  }
+
+  return -1;
 }
 
 int detectRegionId(mach_port_t process, uintptr_t pointerAddress) {
