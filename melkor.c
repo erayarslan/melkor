@@ -54,32 +54,36 @@ mach_port_t getProcess(int pid) {
 }
 
 task_dyld_info_data_t getInfo(mach_port_t process) {
-    kern_return_t kr;
-    task_dyld_info_data_t dyld_info;
-    mach_msg_type_number_t task_info_outCnt = TASK_DYLD_INFO_COUNT;
-    
-    merror = task_info(process, TASK_DYLD_INFO, (task_info_t)&dyld_info, &task_info_outCnt);
-    
-    return dyld_info;
+  task_dyld_info_data_t dyld_info;
+  mach_msg_type_number_t task_info_outCnt = TASK_DYLD_INFO_COUNT;
+
+  merror = task_info(
+    process,
+    TASK_DYLD_INFO,
+    (task_info_t)&dyld_info,
+    &task_info_outCnt
+  );
+
+  return dyld_info;
 }
 
-uintptr_t getBaseAddress (mach_port_t process) {
-    vm_map_offset_t vmoffset;
-    vm_map_size_t vmsize;
-    uint32_t nesting_depth = 0;
-    struct vm_region_submap_info_64 vbr;
-    mach_msg_type_number_t vbrcount = 16;
-    kern_return_t kr;
-    
-    if ((kr = mach_vm_region_recurse(process, &vmoffset, &vmsize,
-                                     &nesting_depth,
-                                     (vm_region_recurse_info_t)&vbr,
-                                     &vbrcount)) != KERN_SUCCESS)
-    {
-        printf("FAIL");
-    }
-    
-    return vmoffset;
+uintptr_t getBaseAddress(mach_port_t process) {
+  vm_map_offset_t vmoffset;
+  vm_map_size_t vmsize;
+  uint32_t nesting_depth = 0;
+  struct vm_region_submap_info_64 vbr;
+  mach_msg_type_number_t vbrcount = 16;
+
+  merror = mach_vm_region_recurse(
+    process,
+    &vmoffset,
+    &vmsize,
+    &nesting_depth,
+    (vm_region_recurse_info_t)&vbr,
+    &vbrcount
+  );
+
+  return vmoffset;
 }
 
 uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
@@ -123,9 +127,9 @@ uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
   return _result;
 }
 
-mach_vm_address_t disableASLR(mach_port_t process) {
-  kern_return_t kr = 0;
+mach_vm_address_t doDisableASLR(mach_port_t process) {
   vm_address_t iter = 0;
+  kern_return_t lerror = KERN_SUCCESS;
 
   while (1) {
     struct mach_header mh = {0};
@@ -135,11 +139,18 @@ mach_vm_address_t disableASLR(mach_port_t process) {
     mach_vm_size_t bytes_read = 0;
     struct vm_region_submap_info_64 info;
     mach_msg_type_number_t count = VM_REGION_SUBMAP_INFO_COUNT_64;
-    if (vm_region_recurse_64(process, &addr, &lsize, &depth, (vm_region_info_t)&info, &count)) {
-        break;
+    if (vm_region_recurse_64(
+      process,
+      &addr,
+      &lsize,
+      &depth,
+      (vm_region_info_t)&info,
+      &count)
+      ) {
+      break;
     }
 
-    kr = mach_vm_read_overwrite(
+    lerror = mach_vm_read_overwrite(
       process,
       (mach_vm_address_t)addr,
       (mach_vm_size_t)sizeof(struct mach_header),
@@ -147,8 +158,12 @@ mach_vm_address_t disableASLR(mach_port_t process) {
       &bytes_read
     );
 
-    if (kr == KERN_SUCCESS && bytes_read == sizeof(struct mach_header)) {
-      if ((mh.magic == MH_MAGIC || mh.magic == MH_MAGIC_64) && mh.filetype == MH_EXECUTE) {
+    if (lerror == KERN_SUCCESS &&
+      bytes_read == sizeof(struct mach_header)) {
+      if ((
+        mh.magic == MH_MAGIC ||
+        mh.magic == MH_MAGIC_64
+        ) && mh.filetype == MH_EXECUTE) {
         return addr;
         break;
       }
@@ -216,32 +231,39 @@ void writeAddress(mach_port_t process, uintptr_t address, int size, void * value
   merror = vm_write(process, address, (vm_address_t)value, size);
 }
 
-vm_offset_t* readAddressAlternative(mach_port_t process, uintptr_t address, int size) {
-    unsigned int _result_size;
-    void* infos;
-    vm_read(process, address, size, (vm_offset_t*)&infos, &_result_size);
-    return (vm_offset_t*)infos;
+vm_offset_t* readAddressLikeStruct(mach_port_t process, uintptr_t address, int size) {
+  unsigned int _result_size;
+  void* infos;
+  vm_read(process, address, size, (vm_offset_t*)&infos, &_result_size);
+  return (vm_offset_t*)infos;
 }
 
-static void* xprocess_read(task_port_t target_task, const void* address, size_t len)
-{
-    void* result = NULL;
-    mach_vm_address_t page_address = (uint32_t)address & (-4096);
-    mach_vm_address_t  last_page_address = ((uint32_t)address + len + 4095) & (-4096);
-    mach_vm_size_t page_size = last_page_address - page_address;
-    uint8_t* local_start;
-    uint32_t local_len;
-    kern_return_t r = vm_read(
-                              target_task,
-                              page_address,
-                              page_size,
-                              (vm_offset_t*)&local_start,
-                              &local_len);
-    if ( r == KERN_SUCCESS ) {
-        result = malloc(len);
-        if ( result != NULL )
-            memcpy(result, &local_start[(uint32_t)address - page_address], len);
-        vm_deallocate(mach_task_self(), (uintptr_t)local_start, local_len);
+static void* readAddressLikeOMG(task_port_t target_task, const void* address, size_t len) {
+  void* result = NULL;
+  kern_return_t lerror = KERN_SUCCESS;
+  mach_vm_address_t page_address = (uint32_t)address & (-4096);
+  mach_vm_address_t last_page_address = ((uint32_t)address + len + 4095) & (-4096);
+  mach_vm_size_t page_size = last_page_address - page_address;
+  uint8_t* local_start;
+  uint32_t local_len;
+
+  lerror = vm_read(
+    target_task,
+    page_address,
+    page_size,
+    (vm_offset_t*)&local_start,
+    &local_len
+  );
+
+  if (lerror == KERN_SUCCESS) {
+    result = malloc(len);
+
+    if (result != NULL) {
+      memcpy(result, &local_start[(uint32_t)address - page_address], len);
     }
-    return result;
+
+    vm_deallocate(mach_task_self(), (uintptr_t)local_start, local_len);
+  }
+
+  return result;
 }
