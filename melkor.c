@@ -25,6 +25,7 @@
 #include <mach-o/dyld_images.h>
 #include <mach-o/dyld.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 kern_return_t merror;
 
@@ -52,21 +53,33 @@ mach_port_t getProcess(int pid) {
   return _result;
 }
 
-void showInfo() {
-  kern_return_t kr;
-  task_dyld_info_data_t infoData;
-  mach_msg_type_number_t task_info_outCnt = TASK_DYLD_INFO_COUNT;
-  merror = task_info (mach_task_self(), TASK_DYLD_INFO, (task_info_t)&infoData, &task_info_outCnt);
+task_dyld_info_data_t getInfo(mach_port_t process) {
+    kern_return_t kr;
+    task_dyld_info_data_t dyld_info;
+    mach_msg_type_number_t task_info_outCnt = TASK_DYLD_INFO_COUNT;
+    
+    merror = task_info(process, TASK_DYLD_INFO, (task_info_t)&dyld_info, &task_info_outCnt);
+    
+    return dyld_info;
+}
 
-  struct dyld_all_image_infos *allImageInfos = (struct dyld_all_image_infos *)infoData.all_image_info_addr;
-
-  int i = 0;
-
-  for(i=0;i<allImageInfos->infoArrayCount;i++) {
-    printf("image: %s %d\n", allImageInfos->infoArray[i].imageFilePath, (int)allImageInfos->infoArray[i].imageFileModDate);
-  }
-
-  uintptr_t sharedCacheSlide = allImageInfos->sharedCacheSlide;
+uintptr_t getBaseAddress (mach_port_t process) {
+    vm_map_offset_t vmoffset;
+    vm_map_size_t vmsize;
+    uint32_t nesting_depth = 0;
+    struct vm_region_submap_info_64 vbr;
+    mach_msg_type_number_t vbrcount = 16;
+    kern_return_t kr;
+    
+    if ((kr = mach_vm_region_recurse(process, &vmoffset, &vmsize,
+                                     &nesting_depth,
+                                     (vm_region_recurse_info_t)&vbr,
+                                     &vbrcount)) != KERN_SUCCESS)
+    {
+        printf("FAIL");
+    }
+    
+    return vmoffset;
 }
 
 uintptr_t getBaseAddressByRegion(mach_port_t process, int region) {
@@ -201,4 +214,34 @@ void * readAddress(mach_port_t process, uintptr_t address, int size) {
 
 void writeAddress(mach_port_t process, uintptr_t address, int size, void * value) {
   merror = vm_write(process, address, (vm_address_t)value, size);
+}
+
+vm_offset_t* readAddressAlternative(mach_port_t process, uintptr_t address, int size) {
+    unsigned int _result_size;
+    void* infos;
+    vm_read(process, address, size, (vm_offset_t*)&infos, &_result_size);
+    return (vm_offset_t*)infos;
+}
+
+static void* xprocess_read(task_port_t target_task, const void* address, size_t len)
+{
+    void* result = NULL;
+    mach_vm_address_t page_address = (uint32_t)address & (-4096);
+    mach_vm_address_t  last_page_address = ((uint32_t)address + len + 4095) & (-4096);
+    mach_vm_size_t page_size = last_page_address - page_address;
+    uint8_t* local_start;
+    uint32_t local_len;
+    kern_return_t r = vm_read(
+                              target_task,
+                              page_address,
+                              page_size,
+                              (vm_offset_t*)&local_start,
+                              &local_len);
+    if ( r == KERN_SUCCESS ) {
+        result = malloc(len);
+        if ( result != NULL )
+            memcpy(result, &local_start[(uint32_t)address - page_address], len);
+        vm_deallocate(mach_task_self(), (uintptr_t)local_start, local_len);
+    }
+    return result;
 }
